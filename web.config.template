@@ -9,8 +9,7 @@
                   arguments=".\ScaleUserAction.dll" 
                   stdoutLogEnabled="true" 
                   stdoutLogFile=".\logs\stdout" 
-                  hostingModel="inprocess"
-                  forwardWindowsAuthToken="true">
+                  hostingModel="inprocess">
         <environmentVariables>
           <environmentVariable name="ASPNETCORE_ENVIRONMENT" value="Production" />
           <environmentVariable name="ConnectionStrings__DefaultConnection" value="Server=YOUR_SERVER_HERE;Database=YOUR_DATABASE_HERE;Integrated Security=true;TrustServerCertificate=True;" />
@@ -18,12 +17,4 @@
       </aspNetCore>
     </system.webServer>
   </location>
-  <system.webServer>
-    <security>
-      <authentication>
-        <windowsAuthentication enabled="true" />
-        <anonymousAuthentication enabled="false" />
-      </authentication>
-    </security>
-  </system.webServer>
 </configuration>

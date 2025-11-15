@@ -1,23 +1,12 @@
 // Program.cs (ASP.NET Core 8/9 Minimal API)
 using Azure;
-using Microsoft.AspNetCore.Authentication.Negotiate;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.Data.SqlClient;
 using System.Data;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add Windows Authentication
-builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme)
-    .AddNegotiate();
-
-builder.Services.AddAuthorization(options =>
-{
-    options.FallbackPolicy = new AuthorizationPolicyBuilder()
-        .RequireAuthenticatedUser()
-        .Build();
-});
+// No authentication required - Anonymous access like other SCALE APIs
 
 // Add HTTP logging for diagnostics (optional, can be tuned)
 builder.Services.AddHttpLogging(logging =>
@@ -39,10 +28,6 @@ var app = builder.Build();
 app.UseHsts();
 app.UseHttpsRedirection();
 app.UseHttpLogging();
-
-// Enable authentication and authorization middleware
-app.UseAuthentication();
-app.UseAuthorization();
 
 // Global exception handler middleware (production safe)
 app.Use(async (context, next) =>
@@ -66,26 +51,14 @@ app.Use(async (context, next) =>
     }
 });
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok" }))
-    .AllowAnonymous(); // Health check doesn't require auth
+app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
 app.MapPost("/ExecProc", async (HttpContext context, IConfiguration config) =>
 {
     var req = context.Request;
     
-    // Get Windows authenticated user
-    var windowsIdentity = context.User.Identity?.Name;
-    if (string.IsNullOrWhiteSpace(windowsIdentity))
-    {
-        return Results.Json(new
-        {
-            ErrorCode = "Unauthorized",
-            ErrorType = 1,
-            Message = "Windows authentication required. No authenticated user found.",
-            AdditionalErrors = Array.Empty<string>(),
-            Data = (object?)null
-        }, statusCode: 401);
-    }
+    // Get Windows authenticated user (may be null if anonymous)
+    var windowsIdentity = context.User.Identity?.Name ?? "Anonymous";
     
     // Get 'action' from query string
     var action = req.Query["action"].ToString();
