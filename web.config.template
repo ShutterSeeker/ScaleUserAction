@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <location path="." inheritInChildApplications="false">
+    <system.webServer>
+      <handlers>
+        <add name="aspNetCore" path="*" verb="*" modules="AspNetCoreModuleV2" resourceType="Unspecified" />
+      </handlers>
+      <aspNetCore processPath="dotnet" 
+                  arguments=".\ScaleUserAction.dll" 
+                  stdoutLogEnabled="true" 
+                  stdoutLogFile=".\logs\stdout" 
+                  hostingModel="inprocess"
+                  forwardWindowsAuthToken="true">
+        <environmentVariables>
+          <environmentVariable name="ASPNETCORE_ENVIRONMENT" value="Production" />
+          <environmentVariable name="ConnectionStrings__DefaultConnection" value="Server=YOUR_SERVER_HERE;Database=YOUR_DATABASE_HERE;Integrated Security=true;TrustServerCertificate=True;" />
+        </environmentVariables>
+      </aspNetCore>
+    </system.webServer>
+  </location>
+  <system.webServer>
+    <security>
+      <authentication>
+        <windowsAuthentication enabled="true" />
+        <anonymousAuthentication enabled="false" />
+      </authentication>
+    </security>
+  </system.webServer>
+</configuration>
