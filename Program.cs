@@ -1,19 +1,9 @@
 // Program.cs (ASP.NET Core 8/9 Minimal API)
 using Azure;
-using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.Data.SqlClient;
 using System.Data;
 
 var builder = WebApplication.CreateBuilder(args);
-
-// No authentication required - Anonymous access like other SCALE APIs
-
-// Add HTTP logging for diagnostics (optional, can be tuned)
-builder.Services.AddHttpLogging(logging =>
-{
-    logging.LoggingFields = HttpLoggingFields.RequestPropertiesAndHeaders |
-                            HttpLoggingFields.ResponsePropertiesAndHeaders;
-});
 
 // Enforce HTTPS and HSTS
 builder.Services.AddHsts(options =>
@@ -27,7 +17,6 @@ var app = builder.Build();
 
 app.UseHsts();
 app.UseHttpsRedirection();
-app.UseHttpLogging();
 
 // Global exception handler middleware (production safe)
 app.Use(async (context, next) =>
@@ -57,8 +46,22 @@ app.MapPost("/ExecProc", async (HttpContext context, IConfiguration config) =>
 {
     var req = context.Request;
     
-    // Get Windows authenticated user (may be null if anonymous)
-    var windowsIdentity = context.User.Identity?.Name ?? "Anonymous";
+    // Get username from SCALE's custom header (sent by SCALE web UI)
+    var rawUsername = req.Headers["UserName"].FirstOrDefault() ?? "Anonymous";
+    
+    // Clean up username: extract just the username part
+    // Handles formats: "DOMAIN\\username" -> "username", "username@domain.com" -> "username"
+    var windowsIdentity = rawUsername;
+    if (rawUsername.Contains('\\'))
+    {
+        // Extract username from DOMAIN\username
+        windowsIdentity = rawUsername.Split('\\').Last();
+    }
+    else if (rawUsername.Contains('@'))
+    {
+        // Extract username from username@domain.com
+        windowsIdentity = rawUsername.Split('@').First();
+    }
     
     // Get 'action' from query string
     var action = req.Query["action"].ToString();

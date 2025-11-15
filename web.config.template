@@ -12,7 +12,7 @@
                   hostingModel="inprocess">
         <environmentVariables>
           <environmentVariable name="ASPNETCORE_ENVIRONMENT" value="Production" />
-          <environmentVariable name="ConnectionStrings__DefaultConnection" value="Server=YOUR_SERVER_HERE;Database=YOUR_DATABASE_HERE;Integrated Security=true;TrustServerCertificate=True;" />
+          <environmentVariable name="ConnectionStrings__DefaultConnection" value="Server=YOUR_SERVER_HERE;Database=YOUR_DATABASE_HERE;User Id=SQL_USERNAME_HERE;Password=SQL_PASSWORD_HERE;TrustServerCertificate=True;" />
         </environmentVariables>
       </aspNetCore>
     </system.webServer>

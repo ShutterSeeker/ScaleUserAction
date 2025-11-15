@@ -1,14 +1,12 @@
 {
     "Logging": {
         "LogLevel": {
-            "Default": "Information",
-            "Microsoft.AspNetCore": "Information",
-            "Microsoft.AspNetCore.Authentication": "Debug",
-            "Microsoft.AspNetCore.Authorization": "Debug"
+            "Default": "Warning",
+            "Microsoft.AspNetCore": "Warning"
         }
     },
     "AllowedHosts": "*",
     "ConnectionStrings": {
-        "DefaultConnection": "Server=YOUR_SERVER_HERE;Database=YOUR_DATABASE_HERE;Integrated Security=true;TrustServerCertificate=True;"
+        "DefaultConnection": "Server=YOUR_SERVER_HERE;Database=YOUR_DATABASE_HERE;User Id=SQL_USERNAME_HERE;Password=SQL_PASSWORD_HERE;TrustServerCertificate=True;"
     }
 }
