@@ -1,5 +1,4 @@
 // Program.cs (ASP.NET Core 8/9 Minimal API)
-using Azure;
 using Microsoft.Data.SqlClient;
 using System.Data;
 
