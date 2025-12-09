@@ -166,10 +166,6 @@ Parameters:
 - Verify `logs` folder exists and has write permissions
 - Check Windows Event Viewer → Application logs for ASP.NET Core errors
 
-**User showing as "Anonymous"**
-- SCALE sends username in `UserName` HTTP header - this is automatically captured
-- Check that SCALE dialog has `UseDefaultCredentials=true`
-
 ## Production Checklist
 
 - [ ] .NET 8 Hosting Bundle installed on IIS server
