@@ -4,8 +4,8 @@
 
 - IIS server with **.NET 8 Hosting Bundle** installed
   - Download: https://dotnet.microsoft.com/download/dotnet/8.0
+  ![Hosting bundle](images/hostingBundle.png)
   - After installation, run: `iisreset`
-![Hosting bundle](images/hostingBundle.png)
 
 ### Verify ASP.NET Core Module Installation
 
