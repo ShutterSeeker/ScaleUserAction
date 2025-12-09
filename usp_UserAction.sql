@@ -1,7 +1,7 @@
 USE [ILS]
 GO
 
-/****** Object:  StoredProcedure [dbo].[usp_UserAction]    Script Date: 10/30/2025 2:03:22 PM ******/
+/****** Object:  StoredProcedure [dbo].[usp_UserAction]    Script Date: 12/8/2025 9:46:07 AM ******/
 SET ANSI_NULLS ON
 GO
 
@@ -206,6 +206,8 @@ BEGIN
 END
 ELSE IF @action = N'Conversion'
 BEGIN
+    SET @changeValue = (SELECT TOP 1 ITEM FROM ITEM WHERE @changeValue = ITEM) -- Normalize capitalization
+
     -- Global validation that applies to all records
     IF NOT EXISTS (SELECT 1 FROM ITEM WHERE @changeValue = ITEM)
     BEGIN
@@ -784,5 +786,4 @@ SELECT MessageCode, Message
 FROM @Results
 GROUP BY MessageCode, Message
 ORDER BY CASE WHEN MessageCode LIKE 'MSG_%' THEN 1 ELSE 2 END, MessageCode
-
 GO

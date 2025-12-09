@@ -6,6 +6,40 @@
   - Download: https://dotnet.microsoft.com/download/dotnet/8.0
   - After installation, run: `iisreset`
 
+### Verify ASP.NET Core Module Installation
+
+After installing the .NET 8 Hosting Bundle, verify the AspNetCoreModuleV2 is properly registered:
+
+1. Open `C:\Windows\System32\inetsrv\Config\applicationHost.config`
+2. Verify `<modules>` section contains:
+   ```xml
+   <add name="AspNetCoreModuleV2" />
+   ```
+3. Verify `<globalModules>` section contains:
+   ```xml
+   <add name="AspNetCoreModuleV2" image="%ProgramFiles%\IIS\Asp.Net Core Module\V2\aspnetcorev2.dll" preCondition="bitness64" />
+   ```
+
+**Important**: If these entries are missing, manually add them to `applicationHost.config` and run `iisreset`.
+
+### Compatibility with 32-bit Applications
+
+**Warning**: AspNetCoreModuleV2 can break existing 32-bit IIS applications.
+
+If you have 32-bit applications (typically in `Program Files (x86)`), add this to their `web.config`:
+
+```xml
+<configuration>
+  <system.webServer>
+    <modules>
+      <remove name="AspNetCoreModuleV2" />
+    </modules>
+  </system.webServer>
+</configuration>
+```
+
+This removes the module only for that specific application while keeping it available globally for .NET Core apps.
+
 ## Deployment Steps
 
 ### 1. Clone Repository in Visual Studio
@@ -118,6 +152,15 @@ Parameters:
 - Check SQL Server permissions for the SQL user account
 - Test SQL connection from the IIS server
 
+**500.19 Error - AspNetCoreModuleV2 not loaded**
+- Open `C:\Windows\System32\inetsrv\Config\applicationHost.config`
+- Verify AspNetCoreModuleV2 is in both `<modules>` and `<globalModules>` sections
+- Run `iisreset` after making changes
+
+**32-bit applications failing after .NET 8 Hosting Bundle installation**
+- Add `<remove name="AspNetCoreModuleV2" />` to affected app's `web.config` under `<system.webServer><modules>`
+- This is common for apps in `Program Files (x86)`
+
 **No logs generated**
 - Verify `logs` folder exists and has write permissions
 - Check Windows Event Viewer → Application logs for ASP.NET Core errors
@@ -129,6 +172,8 @@ Parameters:
 ## Production Checklist
 
 - [ ] .NET 8 Hosting Bundle installed on IIS server
+- [ ] AspNetCoreModuleV2 verified in `applicationHost.config` (both `<modules>` and `<globalModules>`)
+- [ ] 32-bit applications protected with `<remove name="AspNetCoreModuleV2" />` in their `web.config`
 - [ ] `appsettings.json` updated with production connection string
 - [ ] `web.config` updated with production connection string (if overriding)
 - [ ] Application published to `C:\Program Files\Manhattan Associates\ILS\2020\Services\UserAction`
