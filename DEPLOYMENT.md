@@ -64,17 +64,19 @@ Update **`appsettings.json`** with your environment details:
     },
     "AllowedHosts": "your-scale-server.com",
     "ConnectionStrings": {
-        "DefaultConnection": "Server=YOUR_SQL_SERVER;Database=YOUR_DATABASE;User Id=YOUR_SQL_USER;Password=YOUR_SQL_PASSWORD;TrustServerCertificate=True;"
+      "DefaultConnection": "Server=YOUR_SQL_SERVER;Database=YOUR_DATABASE;Integrated Security=true;TrustServerCertificate=True;"
     }
 }
 ```
 
-Update **`web.config`** environment variable (optional - overrides appsettings.json):
+  Update **`web.config`** environment variable (optional - overrides appsettings.json):
 
 ```xml
 <environmentVariable name="ConnectionStrings__DefaultConnection" 
-    value="Server=YOUR_SQL_SERVER;Database=YOUR_DATABASE;User Id=YOUR_SQL_USER;Password=YOUR_SQL_PASSWORD;TrustServerCertificate=True;" />
+    value="Server=YOUR_SQL_SERVER;Database=YOUR_DATABASE;Integrated Security=true;TrustServerCertificate=True;" />
 ```
+
+  With `Integrated Security=true`, SQL Server uses the IIS application pool identity (or custom service account) to connect. No SQL username or password is stored in configuration.
 
 ### 3. Build and Publish
 
@@ -89,8 +91,12 @@ In Visual Studio:
 1. Application pools → Right-click → **Add Application Pool...**
 2. Name: `ScaleUserAction`
 3. Right click `ScaleUserAction` → **Advanced settings**
-4. Identity → `...` → Select `Custom Account` → `ILSSRV`
-5. Enter ILSSRV credentials
+4. Identity → `...`
+5. Choose one of these:
+  - **ApplicationPoolIdentity** if that machine account already has SQL access, or
+  - **Custom Account** for a domain service account such as `DOMAIN\ILSSRV`
+
+The selected identity is the Windows account SQL Server will see when the app opens the database connection.
 
 ### 5. Create IIS Application
 
@@ -104,20 +110,22 @@ In Visual Studio:
 In IIS Manager:
 1. Select **UserAction** application
 2. Double-click **Authentication**
-3. **Enable** Anonymous Authentication
-4. **Disable** Windows Authentication
+3. **Disable** Anonymous Authentication
+4. **Enable** Windows Authentication
 
 ### 7. Grant SQL Server Permissions
 
-Run on your SQL Server (replace placeholders with actual account from web.config):
+Run on your SQL Server and grant permissions to the IIS application pool identity or service account:
 
 ```sql
--- Grant permissions
-ALTER ROLE [db_datareader] ADD MEMBER [YOUR_SQL_USER];
-ALTER ROLE [db_datawriter] ADD MEMBER [YOUR_SQL_USER];
-GRANT EXECUTE ON SCHEMA::[dbo] TO [YOUR_SQL_USER];
+-- Example for a domain service account
+ALTER ROLE [db_datareader] ADD MEMBER [DOMAIN\ILSSRV];
+ALTER ROLE [db_datawriter] ADD MEMBER [DOMAIN\ILSSRV];
+GRANT EXECUTE ON SCHEMA::[dbo] TO [DOMAIN\ILSSRV];
 GO
 ```
+
+If you use `ApplicationPoolIdentity`, grant rights to the server's machine account (for example `DOMAIN\YOUR-IIS-SERVER$`) or switch to a domain service account.
 
 ### 8. Deploy Stored Procedure
 
@@ -150,7 +158,7 @@ Parameters:
 
 **500 Error - Database connection failed**
 - Verify connection string in web.config
-- Check SQL Server permissions for the SQL user account
+- Check SQL Server permissions for the IIS application pool identity or service account
 - Test SQL connection from the IIS server
 
 **500.19 Error - AspNetCoreModuleV2 not loaded**
@@ -176,8 +184,8 @@ Parameters:
 - [ ] Application published to `C:\Program Files\Manhattan Associates\ILS\2020\Services\UserAction`
 - [ ] IIS Application Pool created with ILSSRV identity
 - [ ] IIS Application created under SCALE site
-- [ ] Anonymous Authentication enabled, Windows Authentication disabled
-- [ ] SQL Server permissions granted to connection string user
+- [ ] Windows Authentication enabled, Anonymous Authentication disabled
+- [ ] SQL Server permissions granted to the IIS application pool identity or service account
 - [ ] `usp_UserAction.sql` deployed to database
 - [ ] Health endpoint returns `{"status":"ok"}`
 - [ ] Test API call succeeds

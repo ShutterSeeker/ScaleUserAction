@@ -1,8 +1,19 @@
 // Program.cs (ASP.NET Core 8/9 Minimal API)
+using Microsoft.AspNetCore.Authentication.Negotiate;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.Data.SqlClient;
 using System.Data;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services
+    .AddAuthentication(NegotiateDefaults.AuthenticationScheme)
+    .AddNegotiate();
+
+builder.Services.AddAuthorizationBuilder()
+    .SetFallbackPolicy(new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build());
 
 // Enforce HTTPS and HSTS
 builder.Services.AddHsts(options =>
@@ -16,6 +27,8 @@ var app = builder.Build();
 
 app.UseHsts();
 app.UseHttpsRedirection();
+app.UseAuthentication();
+app.UseAuthorization();
 
 // Global exception handler middleware (production safe)
 app.Use(async (context, next) =>
@@ -39,28 +52,25 @@ app.Use(async (context, next) =>
     }
 });
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 
 app.MapPost("/ExecProc", async (HttpContext context, IConfiguration config) =>
 {
     var req = context.Request;
-    
-    // Get username from SCALE's custom header (sent by SCALE web UI)
-    var rawUsername = req.Headers["UserName"].FirstOrDefault() ?? "Anonymous";
-    
-    // Clean up username: extract just the username part
-    // Handles formats: "DOMAIN\\username" -> "username", "username@domain.com" -> "username"
-    var windowsIdentity = rawUsername;
-    if (rawUsername.Contains('\\'))
+
+    // Use the authenticated Windows identity provided by IIS/Kestrel Negotiate auth.
+    var rawUsername = context.User.Identity?.Name;
+    if (string.IsNullOrWhiteSpace(rawUsername))
     {
-        // Extract username from DOMAIN\username
-        windowsIdentity = rawUsername.Split('\\').Last();
+        return Results.Unauthorized();
     }
-    else if (rawUsername.Contains('@'))
-    {
-        // Extract username from username@domain.com
-        windowsIdentity = rawUsername.Split('@').First();
-    }
+
+    // Keep the existing short username behavior for auditing and stored procedure compatibility.
+    var windowsIdentity = rawUsername.Contains('\\')
+        ? rawUsername.Split('\\').Last()
+        : rawUsername.Contains('@')
+            ? rawUsername.Split('@').First()
+            : rawUsername;
     
     // Get 'action' from query string
     var action = req.Query["action"].ToString();
