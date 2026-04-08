@@ -50,7 +50,7 @@ git clone https://github.com/ShutterSeeker/ScaleUserAction.git
 cd ScaleUserAction
 ```
 
-### 2. Configure Connection String
+### 2. Configure Connection String (SQL Login)
 
 Update **`appsettings.json`** with your environment details:
 
@@ -64,7 +64,7 @@ Update **`appsettings.json`** with your environment details:
     },
     "AllowedHosts": "your-scale-server.com",
     "ConnectionStrings": {
-      "DefaultConnection": "Server=YOUR_SQL_SERVER;Database=YOUR_DATABASE;Integrated Security=true;TrustServerCertificate=True;"
+      "DefaultConnection": "Server=YOUR_SQL_SERVER;Database=YOUR_DATABASE;User Id=YOUR_DB_USER;Password=YOUR_PASSWORD;TrustServerCertificate=True;"
     }
 }
 ```
@@ -72,11 +72,17 @@ Update **`appsettings.json`** with your environment details:
   Update **`web.config`** environment variable (optional - overrides appsettings.json):
 
 ```xml
-<environmentVariable name="ConnectionStrings__DefaultConnection" 
-    value="Server=YOUR_SQL_SERVER;Database=YOUR_DATABASE;Integrated Security=true;TrustServerCertificate=True;" />
+<environmentVariables>
+  <environmentVariable name="ASPNETCORE_ENVIRONMENT" value="Production" />
+  <environmentVariable name="ConnectionStrings__DefaultConnection" value="Server=YOUR_SQL_SERVER;Database=YOUR_DATABASE;User Id=YOUR_DB_USER;Password=YOUR_PASSWORD;TrustServerCertificate=True;" />
+</environmentVariables>
 ```
 
-  With `Integrated Security=true`, SQL Server uses the IIS application pool identity (or custom service account) to connect. No SQL username or password is stored in configuration.
+  This deployment uses SQL authentication (`User Id` / `Password`) in the connection string.
+
+  Keep the production connection string in `web.config` so environment-specific credentials are not baked into published app binaries. Restrict NTFS permissions on `web.config` to IIS admins and the app pool identity only.
+
+  Because SQL authentication is used, the IIS app pool identity does **not** need direct SQL login permissions.
 
 ### 3. Build and Publish
 
@@ -92,11 +98,9 @@ In Visual Studio:
 2. Name: `ScaleUserAction`
 3. Right click `ScaleUserAction` → **Advanced settings**
 4. Identity → `...`
-5. Choose one of these:
-  - **ApplicationPoolIdentity** if that machine account already has SQL access, or
-  - **Custom Account** for a domain service account such as `DOMAIN\ILSSRV`
+5. Use **ApplicationPoolIdentity**
 
-The selected identity is the Windows account SQL Server will see when the app opens the database connection.
+With SQL username/password in the connection string, this identity is only for running the app process (file access, logs, process rights), not for SQL authentication.
 
 ### 5. Create IIS Application
 
@@ -110,26 +114,30 @@ The selected identity is the Windows account SQL Server will see when the app op
 In IIS Manager:
 1. Select **UserAction** application
 2. Double-click **Authentication**
-3. **Disable** Anonymous Authentication
-4. **Enable** Windows Authentication
+3. **Enable** Anonymous Authentication
+4. **Disable** Windows Authentication
+
+SCALE already sends the acting user in the request headers (for example `Username: bbecker`) along with its bearer token, so enabling IIS Windows Authentication is not required for this app and causes the browser sign-in prompt you saw.
 
 ### 7. Grant SQL Server Permissions
 
-Run on your SQL Server and grant permissions to the IIS application pool identity or service account:
+Run on your SQL Server and grant permissions to the SQL login used in `ConnectionStrings__DefaultConnection`:
 
 ```sql
--- Example for a domain service account
-ALTER ROLE [db_datareader] ADD MEMBER [DOMAIN\ILSSRV];
-ALTER ROLE [db_datawriter] ADD MEMBER [DOMAIN\ILSSRV];
-GRANT EXECUTE ON SCHEMA::[dbo] TO [DOMAIN\ILSSRV];
+-- If login already exists, skip CREATE LOGIN / CREATE USER
+CREATE LOGIN [YOUR_DB_USER] WITH PASSWORD = 'YOUR_DB_PASSWORD';
+USE [YOUR_DATABASE];
+CREATE USER [YOUR_DB_USER] FOR LOGIN [YOUR_DB_USER];
+
+ALTER ROLE [db_datareader] ADD MEMBER [YOUR_DB_USER];
+ALTER ROLE [db_datawriter] ADD MEMBER [YOUR_DB_USER];
+GRANT EXECUTE ON SCHEMA::[dbo] TO [YOUR_DB_USER];
 GO
 ```
 
-If you use `ApplicationPoolIdentity`, grant rights to the server's machine account (for example `DOMAIN\YOUR-IIS-SERVER$`) or switch to a domain service account.
-
 ### 8. Deploy Stored Procedure
 
-Run **`usp_UserAction.sql`** on your SCALE database to create/update the stored procedure.
+Deploy the SQL objects documented in `SCALE_INTEGRATION.md` (dispatcher + action procedures in `sql/stored-procs`).
 
 ### 9. Test Deployment
 
@@ -142,24 +150,26 @@ Check logs at: `C:\Program Files\Manhattan Associates\ILS\2020\Services\UserActi
 
 ## SCALE Integration
 
-Configure your SCALE dialog button with:
+SCALE button/action setup, stored procedure deployment, and SQL automation scripts are documented in `SCALE_INTEGRATION.md`.
 
-```
-Event: _webUi.insightListPaneActions.modalDialogPerformPostForSelection
-Parameters:
-  - POSTServiceURL=/UserAction/ExecProc?action=YourActionName
-  - PostData_Grid_YourGrid_internalID=INTERNAL_ID_FIELD
-  - PostData_Input_YourEditor_changeValue=EditorValue
-  - ModalDialogName=YourDialogName
-  - UseDefaultCredentials=true
-```
+See `SCALE_INTEGRATION.md` for:
+- Deploying procedures from `sql/stored-procs`
+- Using `sql/scripts/create-user-action.sql` and `sql/scripts/remove-user-action.sql`
+- Tuning script parameters for your form/action
+- Resource key and security permission handling
 
 ## Troubleshooting
 
 **500 Error - Database connection failed**
 - Verify connection string in web.config
-- Check SQL Server permissions for the IIS application pool identity or service account
+- Verify SQL login/user exists and has required permissions
+- Verify SQL password is correct and login is not locked/expired
 - Test SQL connection from the IIS server
+
+**Browser sign-in prompt when calling `/UserAction/ExecProc`**
+- Verify **Anonymous Authentication** is enabled for the `UserAction` IIS application
+- Verify **Windows Authentication** is disabled for the `UserAction` IIS application
+- Confirm the request still includes the `Username` header from SCALE
 
 **500.19 Error - AspNetCoreModuleV2 not loaded**
 - Open `C:\Windows\System32\inetsrv\Config\applicationHost.config`
@@ -182,10 +192,10 @@ Parameters:
 - [ ] `appsettings.json` updated with production connection string
 - [ ] `web.config` updated with production connection string (if overriding)
 - [ ] Application published to `C:\Program Files\Manhattan Associates\ILS\2020\Services\UserAction`
-- [ ] IIS Application Pool created with ILSSRV identity
+- [ ] IIS Application Pool created with `ApplicationPoolIdentity`
 - [ ] IIS Application created under SCALE site
-- [ ] Windows Authentication enabled, Anonymous Authentication disabled
-- [ ] SQL Server permissions granted to the IIS application pool identity or service account
+- [ ] Anonymous Authentication enabled, Windows Authentication disabled
+- [ ] SQL Server permissions granted to the SQL login used in connection string
 - [ ] `usp_UserAction.sql` deployed to database
 - [ ] Health endpoint returns `{"status":"ok"}`
 - [ ] Test API call succeeds

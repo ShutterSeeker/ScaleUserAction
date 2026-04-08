@@ -7,6 +7,6 @@
     },
     "AllowedHosts": "*",
     "ConnectionStrings": {
-        "DefaultConnection": "Server=YOUR_SERVER_HERE;Database=YOUR_DATABASE_HERE;Integrated Security=true;TrustServerCertificate=True;"
+        "DefaultConnection": "Server=YOUR_SERVER_HERE;Database=YOUR_DATABASE_HERE;User Id=YOUR_DB_USER;Password=YOUR_DB_PASSWORD;TrustServerCertificate=True;"
     }
 }

@@ -2,7 +2,7 @@
 
 This API provides a generic endpoint for Manhattan SCALE, allowing user input from dialog boxes (like the "update priority" in Work Insight) to be passed alongside internal IDs to identify the record(s) to update.
 
-## Why This API is Awesome
+## One API to Rule Them All
 
 This project lets you easily add custom actions to your Manhattan SCALE web app. With this tool, you can:
 - **Edit any table in SCALE** using simple user input from a dialog box—only SQL coding required for each new action!
@@ -17,7 +17,7 @@ The API calls `usp_UserAction` **once** with four parameters:
 - `@action` – the name of the action you want to perform (e.g., "UpdatePriority")
 - `@internalID` – single ID or comma-separated list of IDs (e.g., "123" or "123,456,789")
 - `@changeValue` – the new value or input from the user
-- `@userName` – the Windows authenticated username (automatically passed, e.g., "DOMAIN\User")
+- `@userName` – the acting SCALE username from the request header (for example `bbecker`, automatically passed for auditing)
 
 ### Single vs Multi-Row Operations
 
@@ -36,18 +36,22 @@ You control how errors are handled based on your business logic:
 
 ### Adding New Actions
 
-Inside `usp_UserAction`, use the value of `@action` to branch your logic:
-1. **Validation** (optional): Check if the operation is allowed using `STRING_SPLIT(@internalID, ',')`
-2. **Bulk Update**: Update all rows at once using `WHERE column IN (SELECT value FROM STRING_SPLIT(@internalID, ','))`
-3. **Return**: Set `@MessageCode` and `@Message` to indicate success or error
+`usp_UserAction` is now a dispatcher procedure that routes each action to dedicated action-specific procedures.
 
-This makes it easy to add new buttons or actions in SCALE—just add a new branch in your stored procedure!
+Recommended pattern for adding a new action:
+1. Create a new action procedure (for example `usp_UserAction_YourAction`)
+2. Add/update dispatcher routing in `usp_UserAction`
+3. Use `sql/scripts/create-user-action.sql` to create custom buttons
 
-#### Configuration in SCALE Dialog (snapdragon):
-Update your dialog's save button click event:
-- **Event name:** `_webUi.insightListPaneActions.modalDialogPerformPostForSelection`
-- **Parameters:**
-  - `POSTServiceURL=/UserAction/ExecProc?action=ExampleAction`
-  - `PostData_Grid_ListPaneDataGrid_internalID=internal_num_example`
-  - `PostData_Input_ExampleEditor_changeValue=value`
-  - `ModalDialogName=ExampleModalDialog`
+This keeps action logic modular and easier to deploy and maintain.
+
+## Documentation
+
+For deployment and SCALE wiring, use these guides:
+- `DEPLOYMENT.md` for IIS/API deployment setup
+- `SCALE_INTEGRATION.md` for:
+  - Deploying procedures from `sql/stored-procs`
+  - Running `sql/scripts/create-user-action.sql` and `sql/scripts/remove-user-action.sql`
+  - Tuning script parameters for your screen/action
+  - Resource key and security permission handling
+  - SCALE cache clear and post-install customization workflow

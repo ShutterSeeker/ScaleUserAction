@@ -1,19 +1,9 @@
 // Program.cs (ASP.NET Core 8/9 Minimal API)
-using Microsoft.AspNetCore.Authentication.Negotiate;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.Data.SqlClient;
 using System.Data;
+using System.Security.Principal;
 
 var builder = WebApplication.CreateBuilder(args);
-
-builder.Services
-    .AddAuthentication(NegotiateDefaults.AuthenticationScheme)
-    .AddNegotiate();
-
-builder.Services.AddAuthorizationBuilder()
-    .SetFallbackPolicy(new AuthorizationPolicyBuilder()
-        .RequireAuthenticatedUser()
-        .Build());
 
 // Enforce HTTPS and HSTS
 builder.Services.AddHsts(options =>
@@ -27,8 +17,6 @@ var app = builder.Build();
 
 app.UseHsts();
 app.UseHttpsRedirection();
-app.UseAuthentication();
-app.UseAuthorization();
 
 // Global exception handler middleware (production safe)
 app.Use(async (context, next) =>
@@ -52,20 +40,19 @@ app.Use(async (context, next) =>
     }
 });
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
+app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
 app.MapPost("/ExecProc", async (HttpContext context, IConfiguration config) =>
 {
     var req = context.Request;
 
-    // Use the authenticated Windows identity provided by IIS/Kestrel Negotiate auth.
-    var rawUsername = context.User.Identity?.Name;
-    if (string.IsNullOrWhiteSpace(rawUsername))
-    {
-        return Results.Unauthorized();
-    }
+    // SCALE already sends the acting user in a request header. Fall back to IIS identity if available.
+    var rawUsername = req.Headers["Username"].FirstOrDefault()
+        ?? req.Headers["UserName"].FirstOrDefault()
+        ?? context.User.Identity?.Name
+        ?? "Anonymous";
 
-    // Keep the existing short username behavior for auditing and stored procedure compatibility.
+    // Keep the short username behavior for auditing and stored procedure compatibility.
     var windowsIdentity = rawUsername.Contains('\\')
         ? rawUsername.Split('\\').Last()
         : rawUsername.Contains('@')
@@ -143,16 +130,49 @@ app.MapPost("/ExecProc", async (HttpContext context, IConfiguration config) =>
 
     var connStr = config.GetConnectionString("DefaultConnection");
     if (string.IsNullOrWhiteSpace(connStr))
-        return Results.Problem("Connection string not configured.", statusCode: 500);
+    {
+        return Results.Json(new
+        {
+            ErrorCode = "MissingConnectionString",
+            ErrorType = 1,
+            Message = "Connection string not configured.",
+            AdditionalErrors = Array.Empty<string>(),
+            Data = (object?)null
+        }, statusCode: 500);
+    }
 
     await using var conn = new SqlConnection(connStr);
     try
     {
         await conn.OpenAsync();
     }
-    catch
+    catch (Exception ex)
     {
-        return Results.Problem("Database connection failed.", statusCode: 500);
+        var csb = new SqlConnectionStringBuilder(connStr);
+        var processIdentity = OperatingSystem.IsWindows()
+            ? WindowsIdentity.GetCurrent()?.Name ?? "Unknown"
+            : "Non-Windows";
+
+        return Results.Json(new
+        {
+            ErrorCode = "DatabaseConnectionFailed",
+            ErrorType = 1,
+            Message = "Database connection failed.",
+            AdditionalErrors = new[]
+            {
+                ex.Message
+            },
+            Data = new
+            {
+                RequestUser = rawUsername,
+                AuditUser = windowsIdentity,
+                ProcessIdentity = processIdentity,
+                SqlServer = csb.DataSource,
+                Database = csb.InitialCatalog,
+                IntegratedSecurity = csb.IntegratedSecurity,
+                SqlUser = string.IsNullOrWhiteSpace(csb.UserID) ? "<none>" : csb.UserID
+            }
+        }, statusCode: 500);
     }
 
     // Verify all items have required fields first
