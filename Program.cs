@@ -1,6 +1,7 @@
 // Program.cs (ASP.NET Core 8/9 Minimal API)
 using Microsoft.Data.SqlClient;
 using System.Data;
+using System.Net;
 using System.Security.Principal;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -40,15 +41,79 @@ app.Use(async (context, next) =>
     }
 });
 
+static string? TryGetUsernameFromUserInformationCookie(HttpRequest request)
+{
+    if (request.Cookies.TryGetValue("UserInformation", out var userInformationCookie))
+    {
+        var cookieUsername = TryParseUsernameFromCookieValue(userInformationCookie);
+        if (!string.IsNullOrWhiteSpace(cookieUsername))
+            return cookieUsername;
+    }
+
+    return TryGetUsernameFromCookieHeader(request.Headers.Cookie);
+}
+
+static string? TryGetUsernameFromCookieHeader(IEnumerable<string> cookieHeaders)
+{
+    foreach (var cookieHeader in cookieHeaders)
+    {
+        if (string.IsNullOrWhiteSpace(cookieHeader))
+            continue;
+
+        foreach (var cookiePart in cookieHeader.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separatorIndex = cookiePart.IndexOf('=');
+            if (separatorIndex <= 0)
+                continue;
+
+            var cookieName = cookiePart[..separatorIndex];
+            if (!cookieName.Equals("UserInformation", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var cookieValue = cookiePart[(separatorIndex + 1)..];
+            var cookieUsername = TryParseUsernameFromCookieValue(cookieValue);
+            if (!string.IsNullOrWhiteSpace(cookieUsername))
+                return cookieUsername;
+        }
+    }
+
+    return null;
+}
+
+static string? TryParseUsernameFromCookieValue(string? cookieValue)
+{
+    if (string.IsNullOrWhiteSpace(cookieValue))
+        return null;
+
+    var decodedCookieValue = WebUtility.UrlDecode(cookieValue);
+
+    foreach (var part in decodedCookieValue.Split('&', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+    {
+        var separatorIndex = part.IndexOf('=');
+        if (separatorIndex <= 0)
+            continue;
+
+        var key = part[..separatorIndex];
+        if (!key.Equals("UserName", StringComparison.OrdinalIgnoreCase))
+            continue;
+
+        var value = separatorIndex == part.Length - 1 ? string.Empty : part[(separatorIndex + 1)..];
+        return string.IsNullOrWhiteSpace(value) ? null : WebUtility.UrlDecode(value);
+    }
+
+    return null;
+}
+
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
-app.MapPost("/ExecProc", async (HttpContext context, IConfiguration config) =>
+app.MapMethods("/ExecProc", new[] { "GET", "POST" }, async (HttpContext context, IConfiguration config) =>
 {
     var req = context.Request;
 
-    // SCALE already sends the acting user in a request header. Fall back to IIS identity if available.
+    // SCALE may send the acting user in a header or within the UserInformation cookie.
     var rawUsername = req.Headers["Username"].FirstOrDefault()
         ?? req.Headers["UserName"].FirstOrDefault()
+        ?? TryGetUsernameFromUserInformationCookie(req)
         ?? context.User.Identity?.Name
         ?? "Anonymous";
 
@@ -73,46 +138,58 @@ app.MapPost("/ExecProc", async (HttpContext context, IConfiguration config) =>
         });
     }
 
-    // Limit request body size (e.g., 10 KB)
-    if (req.ContentLength is > 10_240)
+    List<Dictionary<string, object>> items = [];
+
+    if (HttpMethods.IsGet(req.Method))
     {
-        return Results.BadRequest(new
+        items.Add(new Dictionary<string, object>
         {
-            ErrorCode = "PayloadTooLarge",
-            ErrorType = 1,
-            Message = "Request payload too large.",
-            AdditionalErrors = Array.Empty<string>(),
-            Data = (object?)null
+            ["internalID"] = req.Query["internalID"].ToString(),
+            ["changeValue"] = req.Query["changeValue"].ToString()
         });
     }
-
-    using var reader = new StreamReader(req.Body);
-    var raw = await reader.ReadToEndAsync();
-
-    List<Dictionary<string, object>> items = [];
-    try
+    else
     {
-        items = System.Text.Json.JsonSerializer.Deserialize<List<Dictionary<string, object>>>(raw)
-            ?? [];
-    }
-    catch
-    {
-        try
-        {
-            var obj = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(raw);
-            if (obj != null)
-                items.Add(obj);
-        }
-        catch
+        // Limit request body size (e.g., 10 KB)
+        if (req.ContentLength is > 10_240)
         {
             return Results.BadRequest(new
             {
-                ErrorCode = "InvalidPayload",
+                ErrorCode = "PayloadTooLarge",
                 ErrorType = 1,
-                Message = "Invalid payload.",
+                Message = "Request payload too large.",
                 AdditionalErrors = Array.Empty<string>(),
                 Data = (object?)null
             });
+        }
+
+        using var reader = new StreamReader(req.Body);
+        var raw = await reader.ReadToEndAsync();
+
+        try
+        {
+            items = System.Text.Json.JsonSerializer.Deserialize<List<Dictionary<string, object>>>(raw)
+                ?? [];
+        }
+        catch
+        {
+            try
+            {
+                var obj = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(raw);
+                if (obj != null)
+                    items.Add(obj);
+            }
+            catch
+            {
+                return Results.BadRequest(new
+                {
+                    ErrorCode = "InvalidPayload",
+                    ErrorType = 1,
+                    Message = "Invalid payload.",
+                    AdditionalErrors = Array.Empty<string>(),
+                    Data = (object?)null
+                });
+            }
         }
     }
 
@@ -217,30 +294,57 @@ app.MapPost("/ExecProc", async (HttpContext context, IConfiguration config) =>
     cmd.Parameters.AddWithValue("@changeValue", changeValueObj ?? DBNull.Value);
     cmd.Parameters.AddWithValue("@userName", windowsIdentity);  // Windows authenticated user
 
-    // Collect all result messages from stored procedure and combine into single message
+    // Preserve both standard MessageCode/Message responses and arbitrary result sets.
     var successMessages = new List<string>();
     var errorMessages = new List<string>();
     string? finalCode = null;
+    Dictionary<string, object?>? firstRow = null;
+    var arbitraryRows = new List<Dictionary<string, object?>>();
+    var hasMessageColumns = false;
     
     try
     {
         await using var procReader = await cmd.ExecuteReaderAsync();
+        var columnNames = Enumerable.Range(0, procReader.FieldCount)
+            .Select(procReader.GetName)
+            .ToList();
+
+        hasMessageColumns = columnNames.Contains("MessageCode", StringComparer.OrdinalIgnoreCase)
+            && columnNames.Contains("Message", StringComparer.OrdinalIgnoreCase);
+
         while (await procReader.ReadAsync())
         {
-            var messageCode = procReader.GetString(procReader.GetOrdinal("MessageCode"));
-            var message = procReader.GetString(procReader.GetOrdinal("Message"));
-            
-            if (messageCode.StartsWith("ERR_", StringComparison.OrdinalIgnoreCase))
+            var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            for (var index = 0; index < procReader.FieldCount; index++)
             {
-                errorMessages.Add(message);
-                finalCode ??= messageCode; // Use first error code
+                var value = procReader.IsDBNull(index) ? null : procReader.GetValue(index);
+                row[procReader.GetName(index)] = value;
+            }
+
+            firstRow ??= row;
+
+            if (hasMessageColumns)
+            {
+                var messageCode = row.TryGetValue("MessageCode", out var codeObj) ? codeObj?.ToString() ?? string.Empty : string.Empty;
+                var message = row.TryGetValue("Message", out var messageObj) ? messageObj?.ToString() ?? string.Empty : string.Empty;
+
+                if (messageCode.StartsWith("ERR_", StringComparison.OrdinalIgnoreCase))
+                {
+                    errorMessages.Add(message);
+                    finalCode ??= messageCode;
+                }
+                else
+                {
+                    successMessages.Add(message);
+                    finalCode ??= messageCode;
+                }
             }
             else
             {
-                successMessages.Add(message);
-                finalCode ??= messageCode; // Use first success code
+                arbitraryRows.Add(row);
             }
         }
+
         procReader.Close();
     }
     catch (Exception ex)
@@ -261,6 +365,26 @@ app.MapPost("/ExecProc", async (HttpContext context, IConfiguration config) =>
     }
 
     // If no results returned, return error
+    if (firstRow == null)
+    {
+        return Results.BadRequest(new Dictionary<string, object?>
+        {
+            ["ErrorCode"] = "NoResults",
+            ["ErrorType"] = 1,
+            ["Message"] = "Stored procedure returned no results.",
+            ["AdditionalErrors"] = Array.Empty<string>(),
+            ["Data"] = null
+        });
+    }
+
+    if (!hasMessageColumns)
+    {
+        if (arbitraryRows.Count == 1)
+            return Results.Ok(arbitraryRows[0]);
+
+        return Results.Ok(arbitraryRows);
+    }
+
     if (finalCode == null)
     {
         return Results.BadRequest(new Dictionary<string, object?>
@@ -290,13 +414,21 @@ app.MapPost("/ExecProc", async (HttpContext context, IConfiguration config) =>
     }
 
     // All success - return OK
-    return Results.Ok(new Dictionary<string, object?>
+    var response = new Dictionary<string, object?>
     {
         ["ConfirmationMessageCode"] = null,
         ["ConfirmationMessage"] = null,
         ["MessageCode"] = finalCode,
         ["Message"] = combinedMessage
-    });
+    };
+
+    foreach (var entry in firstRow)
+    {
+        if (!response.ContainsKey(entry.Key))
+            response[entry.Key] = entry.Value;
+    }
+
+    return Results.Ok(response);
 });
 
 app.Run();
