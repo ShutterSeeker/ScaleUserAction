@@ -5,16 +5,51 @@
       <handlers>
         <add name="aspNetCore" path="*" verb="*" modules="AspNetCoreModuleV2" resourceType="Unspecified" />
       </handlers>
-      <aspNetCore processPath="dotnet" 
-                  arguments=".\ScaleUserAction.dll" 
-                  stdoutLogEnabled="true" 
-                  stdoutLogFile=".\logs\stdout" 
-                  hostingModel="inprocess">
+      <aspNetCore processPath="dotnet" arguments=".\ScaleUserAction.dll" stdoutLogEnabled="true" stdoutLogFile=".\logs\stdout" hostingModel="inprocess">
         <environmentVariables>
           <environmentVariable name="ASPNETCORE_ENVIRONMENT" value="Production" />
+          <environmentVariable name="Logging__LogLevel__ScaleUserAction.RequestDiagnostics" value="Warning" />
           <environmentVariable name="ConnectionStrings__DefaultConnection" value="Server=YOUR_SERVER_HERE;Database=YOUR_DATABASE_HERE;User Id=YOUR_DB_USER;Password=YOUR_DB_PASSWORD;TrustServerCertificate=True;" />
         </environmentVariables>
       </aspNetCore>
+	  <httpProtocol>
+        <customHeaders>
+          <add name="Access-Control-Allow-Origin" value="http://localhost" />
+          <add name="Access-Control-Allow-Credentials" value="true" />
+          <add name="Access-Control-Allow-Methods" value="GET, POST, PUT, DELETE, OPTIONS" />
+          <add name="Access-Control-Allow-Headers" value="*" />
+          <add name="Access-Control-Max-Age" value="3600" />
+          <add name="Access-Control-Expose-Headers" value="server-response-time,appserver,server-trace-id" />
+        </customHeaders>
+      </httpProtocol>
+    <rewrite>
+        <rules>
+          <rule name="OPTIONS Preflight" stopProcessing="true">
+            <match url=".*" />
+            <conditions>
+              <add input="{REQUEST_METHOD}" pattern="OPTIONS" />
+            </conditions>
+            <action type="CustomResponse" statusCode="200" statusReason="OK" statusDescription="Preflight" />
+          </rule>
+        </rules>
+
+        <!-- FIX: SameSite cookie issue for RF/mobile -->
+        <outboundRules>
+          <rule name="Add SameSite" preCondition="No SameSite">
+            <match serverVariable="RESPONSE_Set_Cookie" pattern=".*" />
+            <action type="Rewrite" value="{R:0}; SameSite=None; Secure" />
+          </rule>
+
+          <preConditions>
+            <preCondition name="No SameSite">
+              <add input="{RESPONSE_Set_Cookie}" pattern="." />
+              <add input="{RESPONSE_Set_Cookie}" pattern="SameSite=None" negate="true" />
+            </preCondition>
+          </preConditions>
+        </outboundRules>
+
+      </rewrite>
+
     </system.webServer>
   </location>
 </configuration>

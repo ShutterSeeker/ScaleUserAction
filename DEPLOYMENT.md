@@ -59,7 +59,8 @@ Update **`appsettings.json`** with your environment details:
     "Logging": {
         "LogLevel": {
             "Default": "Warning",
-            "Microsoft.AspNetCore": "Warning"
+      "Microsoft.AspNetCore": "Warning",
+      "ScaleUserAction.RequestDiagnostics": "Information"
         }
     },
     "AllowedHosts": "your-scale-server.com",
@@ -74,6 +75,7 @@ Update **`appsettings.json`** with your environment details:
 ```xml
 <environmentVariables>
   <environmentVariable name="ASPNETCORE_ENVIRONMENT" value="Production" />
+  <environmentVariable name="Logging__LogLevel__ScaleUserAction.RequestDiagnostics" value="Information" />
   <environmentVariable name="ConnectionStrings__DefaultConnection" value="Server=YOUR_SQL_SERVER;Database=YOUR_DATABASE;User Id=YOUR_DB_USER;Password=YOUR_PASSWORD;TrustServerCertificate=True;" />
 </environmentVariables>
 ```
@@ -148,6 +150,30 @@ Invoke-WebRequest -Uri "https://your-server/UserAction/health" -UseBasicParsing
 
 Check logs at: `C:\Program Files\Manhattan Associates\ILS\2020\Services\UserAction\logs\stdout_*.log`
 
+### Request Diagnostics Logging
+
+The `/ExecProc` endpoint now writes a focused diagnostic log entry showing the safe request details relevant to user resolution:
+
+- HTTP method and path
+- query-string key names
+- header names present on the request
+- `Username` header value
+- whether the `UserInformation` cookie exists and what username was parsed from it
+- whether an `Authorization` header exists, its scheme, the parsed bearer username, which bearer claim supplied it, the bearer claim names present, and the relevant bearer identity claim values
+- `HttpContext.User.Identity` authentication status and identity name
+- final resolved request user and final audit user
+
+Raw bearer tokens and raw cookie values are intentionally not written to the log.
+
+To turn this logging on, set `ScaleUserAction.RequestDiagnostics` to `Information` either in `appsettings.json` or through the IIS environment variable shown above. To turn it back off, change that value to `Warning`.
+
+Where logs are written:
+
+- Local Visual Studio / `dotnet run`: the logs go to the terminal or Visual Studio debug output.
+- IIS with `stdoutLogEnabled="true"`: the logs are written under the app folder in `logs\stdout_*.log`.
+
+If IIS does not create log files, create the `logs` folder manually and give the application pool identity write permission.
+
 ## SCALE Integration
 
 SCALE button/action setup, stored procedure deployment, and SQL automation scripts are documented in `SCALE_INTEGRATION.md`.
@@ -182,6 +208,7 @@ See `SCALE_INTEGRATION.md` for:
 
 **No logs generated**
 - Verify `logs` folder exists and has write permissions
+- Verify `ScaleUserAction.RequestDiagnostics` is set to `Information`
 - Check Windows Event Viewer → Application logs for ASP.NET Core errors
 
 ## Production Checklist

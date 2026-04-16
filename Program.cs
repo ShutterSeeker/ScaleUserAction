@@ -15,6 +15,8 @@ builder.Services.AddHsts(options =>
 });
 
 var app = builder.Build();
+var requestDiagnosticsLogger = app.Services.GetRequiredService<ILoggerFactory>()
+    .CreateLogger("ScaleUserAction.RequestDiagnostics");
 
 app.UseHsts();
 app.UseHttpsRedirection();
@@ -104,28 +106,250 @@ static string? TryParseUsernameFromCookieValue(string? cookieValue)
     return null;
 }
 
+static (string? Username, string? ClaimSource, string ClaimNames, string CandidateClaims) TryParseUsernameFromAuthorizationHeaderValue(string? authorizationHeader)
+{
+    var claims = TryParseJwtClaimsFromAuthorizationHeaderValue(authorizationHeader);
+    if (claims == null || claims.Count == 0)
+        return (null, null, string.Empty, string.Empty);
+
+    var username = TryResolveUsernameFromJwtClaims(claims, out var claimSource);
+    var claimNames = string.Join(", ", claims.Keys.OrderBy(key => key, StringComparer.OrdinalIgnoreCase));
+    var candidateClaims = string.Join(", ", GetJwtIdentityClaimPairs(claims));
+    return (username, claimSource, claimNames, candidateClaims);
+}
+
+static Dictionary<string, string?>? TryParseJwtClaimsFromAuthorizationHeaderValue(string? authorizationHeader)
+{
+    const string bearerPrefix = "Bearer ";
+
+    if (string.IsNullOrWhiteSpace(authorizationHeader)
+        || !authorizationHeader.StartsWith(bearerPrefix, StringComparison.OrdinalIgnoreCase))
+    {
+        return null;
+    }
+
+    var token = authorizationHeader[bearerPrefix.Length..].Trim();
+    if (string.IsNullOrWhiteSpace(token))
+        return null;
+
+    var tokenParts = token.Split('.');
+    if (tokenParts.Length < 2)
+        return null;
+
+    try
+    {
+        var payloadJson = DecodeJwtPayload(tokenParts[1]);
+        using var document = System.Text.Json.JsonDocument.Parse(payloadJson);
+
+        if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object)
+            return null;
+
+        var claims = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            claims[property.Name] = property.Value.ValueKind switch
+            {
+                System.Text.Json.JsonValueKind.String => property.Value.GetString(),
+                System.Text.Json.JsonValueKind.Number => property.Value.ToString(),
+                System.Text.Json.JsonValueKind.True => bool.TrueString,
+                System.Text.Json.JsonValueKind.False => bool.FalseString,
+                _ => null
+            };
+        }
+
+        return claims;
+    }
+    catch
+    {
+        return null;
+    }
+}
+
+static string? TryResolveUsernameFromJwtClaims(IReadOnlyDictionary<string, string?> claims, out string? claimSource)
+{
+    foreach (var candidateClaim in new[]
+    {
+        "preferred_username",
+        "unique_name",
+        "upn",
+        "username",
+        "user_name",
+        "userid",
+        "email",
+        "name",
+        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn",
+        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name",
+        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress",
+        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier"
+    })
+    {
+        if (!claims.TryGetValue(candidateClaim, out var claimValue)
+            || string.IsNullOrWhiteSpace(claimValue))
+        {
+            continue;
+        }
+
+        claimSource = candidateClaim;
+        return claimValue;
+    }
+
+    if (claims.TryGetValue("sub", out var subject)
+        && !string.IsNullOrWhiteSpace(subject)
+        && !Guid.TryParse(subject, out _))
+    {
+        claimSource = "sub";
+        return subject;
+    }
+
+    claimSource = null;
+    return null;
+}
+
+static IEnumerable<string> GetJwtIdentityClaimPairs(IReadOnlyDictionary<string, string?> claims)
+{
+    foreach (var candidateClaim in new[]
+    {
+        "preferred_username",
+        "unique_name",
+        "upn",
+        "username",
+        "user_name",
+        "userid",
+        "email",
+        "name",
+        "sub",
+        "oid",
+        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn",
+        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name",
+        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress",
+        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier"
+    })
+    {
+        if (!claims.TryGetValue(candidateClaim, out var claimValue)
+            || string.IsNullOrWhiteSpace(claimValue))
+        {
+            continue;
+        }
+
+        yield return $"{candidateClaim}={claimValue}";
+    }
+}
+
+static string DecodeJwtPayload(string payload)
+{
+    var base64 = payload.Replace('-', '+').Replace('_', '/');
+    var remainder = base64.Length % 4;
+    if (remainder != 0)
+        base64 = base64.PadRight(base64.Length + (4 - remainder), '=');
+
+    var bytes = Convert.FromBase64String(base64);
+    return System.Text.Encoding.UTF8.GetString(bytes);
+}
+
+static string? TryGetAuthorizationScheme(string? authorizationHeader)
+{
+    if (string.IsNullOrWhiteSpace(authorizationHeader))
+        return null;
+
+    var separatorIndex = authorizationHeader.IndexOf(' ');
+    return separatorIndex <= 0
+        ? authorizationHeader.Trim()
+        : authorizationHeader[..separatorIndex].Trim();
+}
+
+static void LogExecProcRequestDiagnostics(
+    ILogger logger,
+    HttpContext context,
+    string? action,
+    string? headerUsername,
+    string? cookieUsername,
+    string? bearerUsername,
+    string? bearerUsernameClaim,
+    string? bearerClaimNames,
+    string? bearerCandidateClaims,
+    string sourceUsername,
+    string resolvedUsername,
+    string auditUser)
+{
+    var req = context.Request;
+    var authorizationHeader = req.Headers.Authorization.FirstOrDefault();
+    var hasUserInformationCookie = req.Cookies.ContainsKey("UserInformation")
+        || req.Headers.Cookie.Any(cookieHeader => !string.IsNullOrWhiteSpace(cookieHeader)
+            && cookieHeader.Contains("UserInformation=", StringComparison.OrdinalIgnoreCase));
+
+    logger.LogInformation(
+        "ExecProc request diagnostics: Action={Action}; Method={Method}; Path={Path}; QueryKeys={QueryKeys}; ContentType={ContentType}; ContentLength={ContentLength}; RemoteIp={RemoteIp}; HeaderNames={HeaderNames}; UsernameHeader={UsernameHeader}; HasUserInformationCookie={HasUserInformationCookie}; CookieUsername={CookieUsername}; HasAuthorizationHeader={HasAuthorizationHeader}; AuthorizationScheme={AuthorizationScheme}; BearerUsername={BearerUsername}; BearerUsernameClaim={BearerUsernameClaim}; BearerClaimNames={BearerClaimNames}; BearerCandidateClaims={BearerCandidateClaims}; IsAuthenticated={IsAuthenticated}; IdentityName={IdentityName}; SourceUser={SourceUser}; ResolvedUser={ResolvedUser}; AuditUser={AuditUser}",
+        string.IsNullOrWhiteSpace(action) ? "<missing>" : action,
+        req.Method,
+        req.Path.Value,
+        string.Join(", ", req.Query.Keys.OrderBy(key => key, StringComparer.OrdinalIgnoreCase)),
+        req.ContentType,
+        req.ContentLength,
+        context.Connection.RemoteIpAddress?.ToString(),
+        string.Join(", ", req.Headers.Keys.OrderBy(key => key, StringComparer.OrdinalIgnoreCase)),
+        headerUsername,
+        hasUserInformationCookie,
+        cookieUsername,
+        !string.IsNullOrWhiteSpace(authorizationHeader),
+        TryGetAuthorizationScheme(authorizationHeader),
+        bearerUsername,
+        bearerUsernameClaim,
+        bearerClaimNames,
+        bearerCandidateClaims,
+        context.User.Identity?.IsAuthenticated ?? false,
+        context.User.Identity?.Name,
+        sourceUsername,
+        resolvedUsername,
+        auditUser);
+
+    if (string.Equals(resolvedUsername, "Anonymous", StringComparison.OrdinalIgnoreCase))
+    {
+        logger.LogWarning(
+            "ExecProc request resolved to Anonymous. None of Username header, UserInformation cookie, supported bearer token identity claims, or HttpContext user identity produced a user.");
+    }
+}
+
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
 app.MapMethods("/ExecProc", new[] { "GET", "POST" }, async (HttpContext context, IConfiguration config) =>
 {
     var req = context.Request;
+    var headerUsername = req.Headers["Username"].FirstOrDefault();
+    var cookieUsername = TryGetUsernameFromUserInformationCookie(req);
+    var authorizationUserInfo = TryParseUsernameFromAuthorizationHeaderValue(req.Headers.Authorization.FirstOrDefault());
+    var bearerUsername = authorizationUserInfo.Username;
 
-    // SCALE may send the acting user in a header or within the UserInformation cookie.
-    var rawUsername = req.Headers["Username"].FirstOrDefault()
-        ?? req.Headers["UserName"].FirstOrDefault()
-        ?? TryGetUsernameFromUserInformationCookie(req)
+    // SCALE may send the acting user in a header, within the UserInformation cookie, or in a bearer token.
+    var sourceUsername = headerUsername
+        ?? cookieUsername
+        ?? bearerUsername
         ?? context.User.Identity?.Name
         ?? "Anonymous";
 
     // Keep the short username behavior for auditing and stored procedure compatibility.
-    var windowsIdentity = rawUsername.Contains('\\')
-        ? rawUsername.Split('\\').Last()
-        : rawUsername.Contains('@')
-            ? rawUsername.Split('@').First()
-            : rawUsername;
+    var auditUser = sourceUsername.Contains('\\')
+        ? sourceUsername.Split('\\').Last()
+        : sourceUsername.Contains('@')
+            ? sourceUsername.Split('@').First()
+            : sourceUsername;
+    var resolvedUsername = auditUser;
     
     // Get 'action' from query string
     var action = req.Query["action"].ToString();
+    LogExecProcRequestDiagnostics(
+        requestDiagnosticsLogger,
+        context,
+        action,
+        headerUsername,
+        cookieUsername,
+        bearerUsername,
+        authorizationUserInfo.ClaimSource,
+        authorizationUserInfo.ClaimNames,
+        authorizationUserInfo.CandidateClaims,
+        sourceUsername,
+        resolvedUsername,
+        auditUser);
+
     if (string.IsNullOrWhiteSpace(action))
     {
         return Results.BadRequest(new
@@ -241,8 +465,9 @@ app.MapMethods("/ExecProc", new[] { "GET", "POST" }, async (HttpContext context,
             },
             Data = new
             {
-                RequestUser = rawUsername,
-                AuditUser = windowsIdentity,
+                RequestUser = resolvedUsername,
+                SourceUser = sourceUsername,
+                AuditUser = auditUser,
                 ProcessIdentity = processIdentity,
                 SqlServer = csb.DataSource,
                 Database = csb.InitialCatalog,
@@ -292,7 +517,7 @@ app.MapMethods("/ExecProc", new[] { "GET", "POST" }, async (HttpContext context,
     cmd.Parameters.AddWithValue("@action", action ?? (object)DBNull.Value);
     cmd.Parameters.AddWithValue("@internalID", internalIDs);  // CSV list
     cmd.Parameters.AddWithValue("@changeValue", changeValueObj ?? DBNull.Value);
-    cmd.Parameters.AddWithValue("@userName", windowsIdentity);  // Windows authenticated user
+    cmd.Parameters.AddWithValue("@userName", auditUser);  // user
 
     // Preserve both standard MessageCode/Message responses and arbitrary result sets.
     var successMessages = new List<string>();
